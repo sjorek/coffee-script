@@ -32,7 +32,7 @@ Leave off the `-g` if you don't wish to install globally. If you don't wish to u
 
 ```shell
 git clone https://github.com/jashkenas/coffeescript.git
-sudo coffee-script/bin/cake install
+sudo coffeescript/bin/cake install
 ```
 
 ## Getting Started
@@ -56,5 +56,7 @@ To suggest a feature or report a bug: http://github.com/jashkenas/coffeescript/i
 If you'd like to chat, drop by #coffeescript on Freenode IRC.
 
 The source repository: https://github.com/jashkenas/coffeescript.git
+
+Changelog: http://coffeescript.org/#changelog
 
 Our lovely and talented contributors are listed here: http://github.com/jashkenas/coffeescript/contributors

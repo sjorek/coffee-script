@@ -83,17 +83,20 @@ grammar =
     o 'Body TERMINATOR'
   ]
 
-  # Block and statements, which make up a line in a body.
+  # Block and statements, which make up a line in a body. YieldReturn is a
+  # statement, but not included in Statement because that results in an ambiguous
+  # grammar.
   Line: [
     o 'Expression'
     o 'Statement'
+    o 'YieldReturn'
   ]
 
   # Pure statements which cannot be expressions.
   Statement: [
     o 'Return'
     o 'Comment'
-    o 'STATEMENT',                              -> new Literal $1
+    o 'STATEMENT',                              -> new StatementLiteral $1
   ]
 
   # All the different types of expressions in our language. The basic unit of
@@ -113,6 +116,13 @@ grammar =
     o 'Switch'
     o 'Class'
     o 'Throw'
+    o 'Yield'
+  ]
+
+  Yield: [
+    o 'YIELD',                                  -> new Op $1, new Value new Literal ''
+    o 'YIELD Expression',                       -> new Op $1, $2
+    o 'YIELD FROM Expression',                  -> new Op $1.concat($2), $3
   ]
 
   # An indented block of expressions. Note that the [Rewriter](rewriter.html)
@@ -123,28 +133,42 @@ grammar =
     o 'INDENT Body OUTDENT',                    -> $2
   ]
 
-  # A literal identifier, a variable name or property.
   Identifier: [
-    o 'IDENTIFIER',                             -> new Literal $1
+    o 'IDENTIFIER',                             -> new IdentifierLiteral $1
+  ]
+
+  Property: [
+    o 'PROPERTY',                               -> new PropertyName $1
   ]
 
   # Alphanumerics are separated from the other **Literal** matchers because
   # they can also serve as keys in object literals.
   AlphaNumeric: [
-    o 'NUMBER',                                 -> new Literal $1
-    o 'STRING',                                 -> new Literal $1
+    o 'NUMBER',                                 -> new NumberLiteral $1
+    o 'String'
+  ]
+
+  String: [
+    o 'STRING',                                 -> new StringLiteral $1
+    o 'STRING_START Body STRING_END',           -> new StringWithInterpolations $2
+  ]
+
+  Regex: [
+    o 'REGEX',                                  -> new RegexLiteral $1
+    o 'REGEX_START Invocation REGEX_END',       -> new RegexWithInterpolations $2.args
   ]
 
   # All of our immediate values. Generally these can be passed straight
   # through and printed to JavaScript.
   Literal: [
     o 'AlphaNumeric'
-    o 'JS',                                     -> new Literal $1
-    o 'REGEX',                                  -> new Literal $1
-    o 'DEBUGGER',                               -> new Literal $1
-    o 'UNDEFINED',                              -> new Undefined
-    o 'NULL',                                   -> new Null
-    o 'BOOL',                                   -> new Bool $1
+    o 'JS',                                     -> new PassthroughLiteral $1
+    o 'Regex'
+    o 'UNDEFINED',                              -> new UndefinedLiteral
+    o 'NULL',                                   -> new NullLiteral
+    o 'BOOL',                                   -> new BooleanLiteral $1
+    o 'INFINITY',                               -> new InfinityLiteral $1
+    o 'NAN',                                    -> new NaNLiteral
   ]
 
   # Assignment of a variable, property, or index to a value.
@@ -158,22 +182,39 @@ grammar =
   # the ordinary **Assign** is that these allow numbers and strings as keys.
   AssignObj: [
     o 'ObjAssignable',                          -> new Value $1
-    o 'ObjAssignable : Expression',             -> new Assign LOC(1)(new Value($1)), $3, 'object'
+    o 'ObjAssignable : Expression',             -> new Assign LOC(1)(new Value $1), $3, 'object',
+                                                              operatorToken: LOC(2)(new Literal $2)
     o 'ObjAssignable :
-       INDENT Expression OUTDENT',              -> new Assign LOC(1)(new Value($1)), $4, 'object'
+       INDENT Expression OUTDENT',              -> new Assign LOC(1)(new Value $1), $4, 'object',
+                                                              operatorToken: LOC(2)(new Literal $2)
+    o 'SimpleObjAssignable = Expression',       -> new Assign LOC(1)(new Value $1), $3, null,
+                                                              operatorToken: LOC(2)(new Literal $2)
+    o 'SimpleObjAssignable =
+       INDENT Expression OUTDENT',              -> new Assign LOC(1)(new Value $1), $4, null,
+                                                              operatorToken: LOC(2)(new Literal $2)
     o 'Comment'
   ]
 
-  ObjAssignable: [
+  SimpleObjAssignable: [
     o 'Identifier'
-    o 'AlphaNumeric'
+    o 'Property'
     o 'ThisProperty'
+  ]
+
+  ObjAssignable: [
+    o 'SimpleObjAssignable'
+    o 'AlphaNumeric'
   ]
 
   # A return statement from a function body.
   Return: [
     o 'RETURN Expression',                      -> new Return $2
     o 'RETURN',                                 -> new Return
+  ]
+
+  YieldReturn: [
+    o 'YIELD RETURN Expression',                -> new YieldReturn $3
+    o 'YIELD RETURN',                           -> new YieldReturn
   ]
 
   # A block comment.
@@ -261,11 +302,11 @@ grammar =
   # The general group of accessors into an object, by property, by prototype
   # or by array index or slice.
   Accessor: [
-    o '.  Identifier',                          -> new Access $2
-    o '?. Identifier',                          -> new Access $2, 'soak'
-    o ':: Identifier',                          -> [LOC(1)(new Access new Literal('prototype')), LOC(2)(new Access $2)]
-    o '?:: Identifier',                         -> [LOC(1)(new Access new Literal('prototype'), 'soak'), LOC(2)(new Access $2)]
-    o '::',                                     -> new Access new Literal 'prototype'
+    o '.  Property',                            -> new Access $2
+    o '?. Property',                            -> new Access $2, 'soak'
+    o ':: Property',                            -> [LOC(1)(new Access new PropertyName('prototype')), LOC(2)(new Access $2)]
+    o '?:: Property',                           -> [LOC(1)(new Access new PropertyName('prototype'), 'soak'), LOC(2)(new Access $2)]
+    o '::',                                     -> new Access new PropertyName 'prototype'
     o 'Index'
   ]
 
@@ -312,8 +353,12 @@ grammar =
   Invocation: [
     o 'Value OptFuncExist Arguments',           -> new Call $1, $3, $2
     o 'Invocation OptFuncExist Arguments',      -> new Call $1, $3, $2
-    o 'SUPER',                                  -> new Call 'super', [new Splat new Literal 'arguments']
-    o 'SUPER Arguments',                        -> new Call 'super', $2
+    o 'Super'
+  ]
+
+  Super: [
+    o 'SUPER',                                  -> new SuperCall
+    o 'SUPER Arguments',                        -> new SuperCall $2
   ]
 
   # An optional existence check on a function.
@@ -330,13 +375,13 @@ grammar =
 
   # A reference to the *this* current object.
   This: [
-    o 'THIS',                                   -> new Value new Literal 'this'
-    o '@',                                      -> new Value new Literal 'this'
+    o 'THIS',                                   -> new Value new ThisLiteral
+    o '@',                                      -> new Value new ThisLiteral
   ]
 
   # A reference to a property on *this*.
   ThisProperty: [
-    o '@ Identifier',                           -> new Value LOC(1)(new Literal('this')), [LOC(2)(new Access($2))], 'this'
+    o '@ Property',                             -> new Value LOC(1)(new ThisLiteral), [LOC(2)(new Access($2))], 'this'
   ]
 
   # The array literal.
@@ -437,8 +482,8 @@ grammar =
   ]
 
   Loop: [
-    o 'LOOP Block',                             -> new While(LOC(1) new Literal 'true').addBody $2
-    o 'LOOP Expression',                        -> new While(LOC(1) new Literal 'true').addBody LOC(2) Block.wrap [$2]
+    o 'LOOP Block',                             -> new While(LOC(1) new BooleanLiteral 'true').addBody $2
+    o 'LOOP Expression',                        -> new While(LOC(1) new BooleanLiteral 'true').addBody LOC(2) Block.wrap [$2]
   ]
 
   # Array, object, and range comprehensions, at the most generic level.
@@ -451,7 +496,8 @@ grammar =
   ]
 
   ForBody: [
-    o 'FOR Range',                              -> source: LOC(2) new Value($2)
+    o 'FOR Range',                              -> source: (LOC(2) new Value($2))
+    o 'FOR Range BY Expression',                -> source: (LOC(2) new Value($2)), step: $4
     o 'ForStart ForSource',                     -> $2.own = $1.own; $2.name = $1[0]; $2.index = $1[1]; $2
   ]
 
@@ -595,6 +641,7 @@ operators = [
   ['left',      'COMPARE']
   ['left',      'LOGIC']
   ['nonassoc',  'INDENT', 'OUTDENT']
+  ['right',     'YIELD']
   ['right',     '=', ':', 'COMPOUND_ASSIGN', 'RETURN', 'THROW', 'EXTENDS']
   ['right',     'FORIN', 'FOROF', 'BY', 'WHEN']
   ['right',     'IF', 'ELSE', 'FOR', 'WHILE', 'UNTIL', 'LOOP', 'SUPER', 'CLASS']
